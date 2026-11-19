@@ -537,6 +537,22 @@ def evaluate_function_def(
     return custom_tools[func_def.name]
 
 
+class _ClassBodyScope(dict):
+    """Name lookup for expressions in a class body: class-local names first, then the enclosing state.
+
+    Nested scopes (lambdas, comprehension bodies, functions) start from `copy()`, which only returns the
+    enclosing state, because class-level names are not visible from nested scopes in Python.
+    """
+
+    def __init__(self, class_dict: Mapping[str, Any], enclosing_state: dict[str, Any]):
+        super().__init__(enclosing_state)
+        self.update(class_dict)
+        self._enclosing_state = enclosing_state
+
+    def copy(self) -> dict[str, Any]:
+        return self._enclosing_state.copy()
+
+
 def evaluate_class_def(
     class_def: ast.ClassDef,
     state: dict[str, Any],
@@ -567,12 +583,16 @@ def evaluate_class_def(
             class_dict[stmt.name] = evaluate_ast(stmt, state, static_tools, custom_tools, authorized_imports)
         elif isinstance(stmt, ast.AnnAssign):
             if stmt.value:
-                value = evaluate_ast(stmt.value, state, static_tools, custom_tools, authorized_imports)
+                value = evaluate_ast(
+                    stmt.value, _ClassBodyScope(class_dict, state), static_tools, custom_tools, authorized_imports
+                )
             target = stmt.target
             # Handle target types for annotation
             if isinstance(target, ast.Name):
                 # Simple variable annotation like "x: int"
-                annotation = evaluate_ast(stmt.annotation, state, static_tools, custom_tools, authorized_imports)
+                annotation = evaluate_ast(
+                    stmt.annotation, _ClassBodyScope(class_dict, state), static_tools, custom_tools, authorized_imports
+                )
                 class_dict.setdefault("__annotations__", {})[target.id] = annotation
                 # Assign value if provided
                 if stmt.value:
@@ -593,7 +613,9 @@ def evaluate_class_def(
             else:
                 raise InterpreterError(f"Unsupported AnnAssign target in class body: {type(target).__name__}")
         elif isinstance(stmt, ast.Assign):
-            value = evaluate_ast(stmt.value, state, static_tools, custom_tools, authorized_imports)
+            value = evaluate_ast(
+                stmt.value, _ClassBodyScope(class_dict, state), static_tools, custom_tools, authorized_imports
+            )
             for target in stmt.targets:
                 if isinstance(target, ast.Name):
                     class_dict[target.id] = value

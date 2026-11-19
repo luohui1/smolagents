@@ -1647,6 +1647,47 @@ exec(compile('{unsafe_code}', 'no filename', 'exec'))
         assert state["Status"].PENDING.value == "Pending"
         assert state["Status"].ERROR.value == "Error"
 
+    @pytest.mark.parametrize(
+        "class_body, attribute, expected",
+        [
+            # Assignments see names bound earlier in the class body
+            ('value = "local"\n    alias = value', "alias", "local"),
+            ('value: str = "local"\n    alias: str = value', "alias", "local"),
+            ("n = 3\n    m = n * n", "m", 9),
+            ("items = [1, 2]\n    doubled = [i * 2 for i in items]", "doubled", [2, 4]),
+            # Nested scopes do not see class-level names
+            ('value = "local"\n    get = lambda: value', "get", "global"),
+            ('value = "local"\n    values = [value for _ in range(2)]', "values", ["global", "global"]),
+            ('value = "local"\n    values = list(value for _ in range(2))', "values", ["global", "global"]),
+            ('value = "local"\n    values = {i: value for i in range(2)}', "values", {0: "global", 1: "global"}),
+        ],
+    )
+    def test_evaluate_class_def_name_resolution(self, class_body, attribute, expected):
+        code = f'value = "global"\nclass Settings:\n    {class_body}\nresult = Settings.{attribute}'
+        reference_state = {}
+        exec(code, reference_state)
+        state = {}
+        evaluate_python_code(code, BASE_PYTHON_TOOLS, state=state)
+        result = state["result"]
+        reference = reference_state["result"]
+        if callable(reference):
+            result, reference = result(), reference()
+        assert result == reference == expected
+
+    def test_evaluate_class_def_enum_member_alias(self):
+        code = dedent(
+            """
+        from enum import Enum
+
+        class Color(Enum):
+            RED = 1
+            CRIMSON = RED
+        """
+        )
+        state = {}
+        evaluate_python_code(code, BASE_PYTHON_TOOLS, state=state, authorized_imports=["enum"])
+        assert state["Color"].CRIMSON is state["Color"].RED
+
     def test_evaluate_annassign(self):
         code = dedent("""\
             # Basic annotated assignment
